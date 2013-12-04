@@ -36,7 +36,8 @@
 -define(AUTH_PREFERENCE, [
 		"CRAM-MD5",
 		"LOGIN",
-		"PLAIN"
+		"PLAIN",
+		"XOAUTH2"
 	]).
 
 -define(TIMEOUT, 1200000).
@@ -342,8 +343,8 @@ do_AUTH(Socket, Username, Password, Types) ->
 
 -spec do_AUTH_each(Socket :: socket:socket(), Username :: string() | binary(), Password :: string() | binary(), AuthTypes :: [string()]) -> boolean().
 do_AUTH_each(_Socket, _Username, _Password, []) ->
-	false;
-do_AUTH_each(Socket, Username, Password, ["CRAM-MD5" | Tail]) ->
+    false;
+do_AUTH_each(Socket, Username, Password, ["CRAM-MD5" | Tail]) when is_list(Password); is_binary(Password) ->
 	socket:send(Socket, "AUTH CRAM-MD5\r\n"),
 	case read_possible_multiline_reply(Socket) of
 		{ok, <<"334 ", Rest/binary>>} ->
@@ -364,7 +365,7 @@ do_AUTH_each(Socket, Username, Password, ["CRAM-MD5" | Tail]) ->
 			%io:format("got ~s~n", [Something]),
 			do_AUTH_each(Socket, Username, Password, Tail)
 	end;
-do_AUTH_each(Socket, Username, Password, ["LOGIN" | Tail]) ->
+do_AUTH_each(Socket, Username, Password, ["LOGIN" | Tail]) when is_list(Password); is_binary(Password) ->
 	socket:send(Socket, "AUTH LOGIN\r\n"),
 	case read_possible_multiline_reply(Socket) of
 		%% base64 Username: or username:
@@ -394,7 +395,7 @@ do_AUTH_each(Socket, Username, Password, ["LOGIN" | Tail]) ->
 			%io:format("got ~s~n", [Something]),
 			do_AUTH_each(Socket, Username, Password, Tail)
 	end;
-do_AUTH_each(Socket, Username, Password, ["PLAIN" | Tail]) ->
+do_AUTH_each(Socket, Username, Password, ["PLAIN" | Tail]) when is_list(Password); is_binary(Password) ->
 	AuthString = base64:encode("\0"++Username++"\0"++Password),
 	socket:send(Socket, ["AUTH PLAIN ", AuthString, "\r\n"]),
 	case read_possible_multiline_reply(Socket) of
@@ -407,9 +408,27 @@ do_AUTH_each(Socket, Username, Password, ["PLAIN" | Tail]) ->
 			%io:format("~p~n", [Else]),
 			do_AUTH_each(Socket, Username, Password, Tail)
 	end;
-do_AUTH_each(Socket, Username, Password, [_Type | Tail]) ->
+do_AUTH_each(Socket, Username, {token, Token} = Auth, ["XOAUTH2" | Tail]) ->
+    socket:send(Socket, ["AUTH XOAUTH2 ",
+			 base64:encode(iolist_to_binary(["user=", Username, <<1>>, "auth=Bearer ", Token, <<1>>, <<1>>])),
+			 "\r\n"]),
+    case read_possible_multiline_reply(Socket) of
+	{ok, <<"334 ", _Rest/binary>>} ->
+	    % io:format("Failed, response: ~p~n", [base64:decode(binary:replace(Rest, <<"\r\n">>, <<>>))]),
+	    socket:send(Socket, "\r\n"),
+	    _Flush = read_possible_multiline_reply(Socket),
+	    % io:format("Post failure response: ~p~n", [Flush]),
+	    do_AUTH_each(Socket, Username, Auth, Tail);
+	{ok, <<"235", _Rest/binary>>} ->
+	    %io:format("authentication accepted~n"),
+	    true;
+	_Else ->
+	    % io:format("Unexpected response: ~p~n", [Else]),
+	    do_AUTH_each(Socket, Username, Auth, Tail)
+    end;
+do_AUTH_each(Socket, Username, Auth, [_Type | Tail]) ->
 	%io:format("unsupported AUTH type ~s~n", [Type]),
-	do_AUTH_each(Socket, Username, Password, Tail).
+	do_AUTH_each(Socket, Username, Auth, Tail).
 
 -spec try_EHLO(Socket :: socket:socket(), Options :: list()) -> {ok, list()}.
 try_EHLO(Socket, Options) ->
@@ -610,6 +629,7 @@ parse_extensions(Reply) ->
 						end
 				end
 		end  || Entry <- Reply2].
+
 
 -ifdef(TEST).
 
